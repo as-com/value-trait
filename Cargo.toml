@@ -11,7 +11,7 @@ description = "Traits to deal with JSONesque values"
 [dependencies]
 itoa = { version = "0.4", features = ["i128"] }
 ryu = "1"
-halfbrown = "0.1"
+halfbrown = { git = "https://github.com/as-com/halfbrown.git", rev = "b40e375dda24066b4a7902074179e6db8f614fdd" }
 float-cmp = "0.7"
 
 [features]
@@ -20,6 +20,8 @@ float-cmp = "0.7"
 
 # Support for custom types
 custom-types = []
+
+preserve_order = ["halfbrown/indexmap", "halfbrown/ahash"]
 
 neon = []
 
