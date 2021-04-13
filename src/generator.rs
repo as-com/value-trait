@@ -357,9 +357,10 @@ impl<V: Value> BaseGenerator for PrettyGenerator<V> {
 
     fn new_line(&mut self) -> io::Result<()> {
         self.code.push(b'\n');
-        for _ in 0..(self.dent * self.spaces_per_indent) {
-            self.code.push(b' ');
-        }
+        self.code.resize(
+            self.code.len() + (self.dent * self.spaces_per_indent) as usize,
+            b' ',
+        );
         Ok(())
     }
 
@@ -512,12 +513,12 @@ where
 
     let mut idx = 0;
     let zero = _mm256_set1_epi8(0);
-    let lower_quote_range = _mm256_set1_epi8(0x1F as i8);
+    let lower_quote_range = _mm256_set1_epi8(0x1F_i8);
     let quote = _mm256_set1_epi8(b'"' as i8);
     let backslash = _mm256_set1_epi8(b'\\' as i8);
     while string.len() - idx >= 32 {
         // Load 32 bytes of data;
-        let data: __m256i = _mm256_loadu_si256(string.as_ptr().add(idx) as *const __m256i);
+        let data: __m256i = _mm256_loadu_si256(string.as_ptr().add(idx).cast::<__m256i>());
         // Test the data against being backslash and quote.
         let bs_or_quote = _mm256_or_si256(
             _mm256_cmpeq_epi8(data, backslash),
@@ -575,12 +576,12 @@ where
 
     let mut idx = 0;
     let zero = _mm_set1_epi8(0);
-    let lower_quote_range = _mm_set1_epi8(0x1F as i8);
+    let lower_quote_range = _mm_set1_epi8(0x1F_i8);
     let quote = _mm_set1_epi8(b'"' as i8);
     let backslash = _mm_set1_epi8(b'\\' as i8);
     while string.len() - idx > 16 {
         // Load 16 bytes of data;
-        let data: __m128i = _mm_loadu_si128(string.as_ptr().add(idx) as *const __m128i);
+        let data: __m128i = _mm_loadu_si128(string.as_ptr().add(idx).cast::<__m128i>());
         // Test the data against being backslash and quote.
         let bs_or_quote =
             _mm_or_si128(_mm_cmpeq_epi8(data, backslash), _mm_cmpeq_epi8(data, quote));
@@ -613,13 +614,16 @@ where
     Ok(())
 }
 
-#[cfg(all(target_arch = "aarch64", feature = "neon"))]
+#[cfg(all(target_arch = "aarch64"))]
 #[inline(always)]
 pub(crate) unsafe fn write_str_simd<W>(writer: &mut W, string: &mut &[u8]) -> io::Result<()>
 where
     W: std::io::Write,
 {
-    use std::arch::aarch64::*;
+    use std::arch::aarch64::{
+        uint8x16_t, vandq_u8, vceqq_u8, vdupq_n_u8, veorq_u8, vgetq_lane_u16, vld1q_u8, vorrq_u8,
+        vpaddq_u8, vreinterpretq_u16_u8,
+    };
     use std::mem;
 
     #[inline(always)]
@@ -661,19 +665,19 @@ where
         let is_unchanged = veorq_u8(data, in_quote_range);
         let in_range = vceqq_u8(is_unchanged, zero);
         let quote_bits = neon_movemask(vorrq_u8(bs_or_quote, in_range));
-        if quote_bits != 0 {
+        if quote_bits == 0 {
+            idx += 16;
+        } else {
             let quote_dist = quote_bits.trailing_zeros() as usize;
             stry!(writer.write_all(&string[0..idx + quote_dist]));
             let ch = string[idx + quote_dist];
             match ESCAPED[ch as usize] {
-                b'u' => stry!(u_encode(writer, *ch)),
+                b'u' => stry!(u_encode(writer, ch)),
                 escape => stry!(writer.write_all(&[b'\\', escape])),
             }
 
             *string = &string[idx + quote_dist + 1..];
             idx = 0;
-        } else {
-            idx += 16;
         }
     }
     stry!(writer.write_all(&string[0..idx]));
