@@ -1,18 +1,23 @@
 [package]
 name = "value-trait"
-version = "0.2.4-alpha.0"
+version = "0.2.10-alpha.0"
 authors = ["Heinz N. Gies <heinz@licenser.net>"]
 edition = "2018"
 license = "Apache-2.0/MIT"
 description = "Traits to deal with JSONesque values"
+repository = "https://github.com/as-com/value-trait"
+readme = "README.md"
+documentation = "https://docs.rs/value-trait"
+rust-version = "1.49"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
 itoa = { version = "0.4", features = ["i128"] }
 ryu = "1"
 halfbrown = { git = "https://github.com/as-com/halfbrown.git", branch = "master" }
-float-cmp = "0.8"
+float-cmp = "0.9"
+
+abi_stable = { version = "0.10.3", optional = true, default-features = false }
 
 [features]
 # Support for 128 bit integers
@@ -22,3 +27,6 @@ float-cmp = "0.8"
 custom-types = []
 
 preserve_order = ["halfbrown/indexmap", "halfbrown/ahash"]
+
+# Support for abi-stable's `StableAbi` implementation
+c-abi = ["abi_stable"]
