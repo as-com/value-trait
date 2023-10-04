@@ -2,7 +2,7 @@ use crate::ValueAccess;
 
 use super::{fmt, Value, ValueType};
 use float_cmp::approx_eq;
-use halfbrown::HashMap;
+use std::collections::HashMap;
 use std::convert::TryFrom;
 use std::ops::{Index, IndexMut};
 
@@ -67,6 +67,19 @@ impl IndexMut<usize> for StaticNode {
 }
 
 impl Value for StaticNode {
+    #[inline]
+    #[must_use]
+    fn is_null(&self) -> bool {
+        self == &Self::Null
+    }
+}
+
+impl ValueAccess for StaticNode {
+    type Target = StaticNode;
+    type Key = String;
+    type Array = Vec<StaticNode>;
+    type Object = HashMap<String, StaticNode>;
+
     #[cfg(not(feature = "128bit"))]
     #[inline]
     #[must_use]
@@ -95,20 +108,6 @@ impl Value for StaticNode {
             Self::U64(_) => ValueType::U64,
         }
     }
-
-    #[inline]
-    #[must_use]
-    fn is_null(&self) -> bool {
-        self == &Self::Null
-    }
-}
-
-impl ValueAccess for StaticNode {
-    type Target = StaticNode;
-    type Key = String;
-    type Array = Vec<StaticNode>;
-    type Object = HashMap<String, StaticNode>;
-
     #[inline]
     #[must_use]
     fn as_array(&self) -> Option<&Self::Array> {
@@ -249,33 +248,33 @@ impl ValueAccess for StaticNode {
 }
 
 #[cfg(not(tarpaulin_include))]
-impl<'v> fmt::Display for StaticNode {
+impl fmt::Display for StaticNode {
     #[cfg(not(feature = "128bit"))]
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
             Self::Null => write!(f, "null"),
-            Self::Bool(b) => write!(f, "{}", b),
-            Self::I64(n) => write!(f, "{}", n),
-            Self::U64(n) => write!(f, "{}", n),
-            Self::F64(n) => write!(f, "{}", n),
+            Self::Bool(b) => write!(f, "{b}"),
+            Self::I64(n) => write!(f, "{n}"),
+            Self::U64(n) => write!(f, "{n}"),
+            Self::F64(n) => write!(f, "{n}"),
         }
     }
     #[cfg(feature = "128bit")]
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
             Self::Null => write!(f, "null"),
-            Self::Bool(b) => write!(f, "{}", b),
-            Self::I64(n) => write!(f, "{}", n),
-            Self::U64(n) => write!(f, "{}", n),
-            Self::F64(n) => write!(f, "{}", n),
-            Self::I128(n) => write!(f, "{}", n),
-            Self::U128(n) => write!(f, "{}", n),
+            Self::Bool(b) => write!(f, "{b}"),
+            Self::I64(n) => write!(f, "{n}"),
+            Self::U64(n) => write!(f, "{n}"),
+            Self::F64(n) => write!(f, "{n}"),
+            Self::I128(n) => write!(f, "{n}"),
+            Self::U128(n) => write!(f, "{n}"),
         }
     }
 }
 
 #[allow(clippy::cast_sign_loss, clippy::default_trait_access)]
-impl<'a> PartialEq for StaticNode {
+impl PartialEq for StaticNode {
     #[cfg(not(feature = "128bit"))]
     #[inline]
     #[must_use]

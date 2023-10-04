@@ -1,7 +1,10 @@
+#[cfg(feature = "halfbrown")]
 use halfbrown::HashMap as Halfbrown;
-use std::borrow::Borrow;
+#[cfg(feature = "hashbrown")]
+use hashbrown::HashMap as Hashbrown;
 use std::collections::HashMap;
 use std::hash::Hash;
+use std::{borrow::Borrow, hash::BuildHasher};
 
 /// A JSON Object
 pub trait Object {
@@ -64,9 +67,11 @@ pub trait Object {
     }
 }
 
-impl<MapK, MapE> Object for Halfbrown<MapK, MapE>
+#[cfg(feature = "halfbrown")]
+impl<MapK, MapE, S> Object for Halfbrown<MapK, MapE, S>
 where
     MapK: Hash + Eq,
+    S: BuildHasher + Default,
 {
     type Key = MapK;
     type Element = MapE;
@@ -129,7 +134,7 @@ where
     }
 }
 
-impl<MapK, MapE, S: ::std::hash::BuildHasher> Object for HashMap<MapK, MapE, S>
+impl<MapK, MapE, S: BuildHasher> Object for HashMap<MapK, MapE, S>
 where
     MapK: Hash + Eq,
 {
@@ -191,6 +196,72 @@ where
     #[inline]
     fn len(&self) -> usize {
         HashMap::len(self)
+    }
+}
+
+#[cfg(feature = "hashbrown")]
+impl<MapK, MapE, S: BuildHasher> Object for Hashbrown<MapK, MapE, S>
+where
+    MapK: Hash + Eq,
+{
+    type Key = MapK;
+    type Element = MapE;
+
+    #[inline]
+    fn get<Q: ?Sized>(&self, k: &Q) -> Option<&Self::Element>
+    where
+        Self::Key: Borrow<Q> + Hash + Eq,
+        Q: Hash + Eq + Ord,
+    {
+        Hashbrown::get(self, k)
+    }
+
+    #[inline]
+    fn get_mut<Q: ?Sized>(&mut self, k: &Q) -> Option<&mut Self::Element>
+    where
+        Self::Key: Borrow<Q> + Hash + Eq,
+        Q: Hash + Eq + Ord,
+    {
+        Hashbrown::get_mut(self, k)
+    }
+
+    #[inline]
+    fn insert<K, V>(&mut self, k: K, v: V) -> Option<Self::Element>
+    where
+        K: Into<Self::Key>,
+        V: Into<Self::Element>,
+        Self::Key: Hash + Eq,
+    {
+        Hashbrown::insert(self, k.into(), v.into())
+    }
+
+    #[inline]
+    fn remove<Q: ?Sized>(&mut self, k: &Q) -> Option<Self::Element>
+    where
+        Self::Key: Borrow<Q> + Hash + Eq,
+        Q: Hash + Eq + Ord,
+    {
+        Hashbrown::remove(self, k)
+    }
+
+    #[inline]
+    fn iter<'i>(&'i self) -> Box<dyn Iterator<Item = (&Self::Key, &Self::Element)> + 'i> {
+        Box::new(Hashbrown::iter(self))
+    }
+
+    #[inline]
+    fn keys<'i>(&'i self) -> Box<dyn Iterator<Item = &Self::Key> + 'i> {
+        Box::new(Hashbrown::keys(self))
+    }
+
+    #[inline]
+    fn values<'i>(&'i self) -> Box<dyn Iterator<Item = &Self::Element> + 'i> {
+        Box::new(Hashbrown::values(self))
+    }
+
+    #[inline]
+    fn len(&self) -> usize {
+        Hashbrown::len(self)
     }
 }
 

@@ -1,5 +1,5 @@
 // This is mostly taken from json-rust's codegen
-// as it seems to perform well and it makes snense to see
+// as it seems to perform well and it makes sense to see
 // if we can adopt the approach
 //
 // https://github.com/maciejhirsz/json-rust/blob/master/src/codegen.rs
@@ -75,7 +75,7 @@ pub trait BaseGenerator {
     /// The writer
     type T: Write;
 
-    /// returns teh writer
+    /// returns the writer
     fn get_writer(&mut self) -> &mut Self::T;
 
     /// Write a slice
@@ -159,7 +159,7 @@ pub trait BaseGenerator {
             // quote characters that gives us a bitmask of 0x1f for that
             // region, only quote (`"`) and backslash (`\`) are not in
             // this range.
-            stry!(write_str_simd(self.get_writer(), &mut string,));
+            stry!(self.write_str_simd(&mut string));
         }
         // Legacy code to handle the remainder of the code
         for (index, ch) in string.iter().enumerate() {
@@ -215,34 +215,286 @@ pub trait BaseGenerator {
     /// if the write fails
     #[inline(always)]
     fn write_int<I: itoa::Integer>(&mut self, num: I) -> io::Result<()> {
-        itoa::write(self.get_writer(), num).map(|_| ())
+        let mut buffer = itoa::Buffer::new();
+        let s = buffer.format(num);
+        self.get_writer().write_all(s.as_bytes())
     }
 
-    /// writes an integer 128 bit
-    /// # Errors
-    /// if the write fails
+    #[cfg(target_feature = "avx2")]
     #[inline(always)]
-    #[deprecated(since = "0.1.5", note = "Please use the write_int function instead")]
-    fn write_int128(&mut self, num: i128) -> io::Result<()> {
-        itoa::write(self.get_writer(), num).map(|_| ())
+    #[allow(clippy::cast_possible_wrap, clippy::cast_ptr_alignment)]
+    /// Writes a string with simd-acceleration
+    /// # Safety
+    /// This function is unsafe because it uses simd instructions
+    /// # Errors
+    ///  if the write fails
+    unsafe fn write_str_simd(&mut self, string: &mut &[u8]) -> io::Result<()> {
+        #[cfg(target_arch = "x86")]
+        use std::arch::x86::{
+            __m256i, _mm256_and_si256, _mm256_cmpeq_epi8, _mm256_loadu_si256, _mm256_movemask_epi8,
+            _mm256_or_si256, _mm256_set1_epi8, _mm256_xor_si256,
+        };
+        #[cfg(target_arch = "x86_64")]
+        use std::arch::x86_64::{
+            __m256i, _mm256_and_si256, _mm256_cmpeq_epi8, _mm256_loadu_si256, _mm256_movemask_epi8,
+            _mm256_or_si256, _mm256_set1_epi8, _mm256_xor_si256,
+        };
+
+        let writer = self.get_writer();
+        let mut idx = 0;
+        let zero = _mm256_set1_epi8(0);
+        let lower_quote_range = _mm256_set1_epi8(0x1F_i8);
+        let quote = _mm256_set1_epi8(b'"' as i8);
+        let backslash = _mm256_set1_epi8(b'\\' as i8);
+        while string.len() - idx >= 32 {
+            // Load 32 bytes of data;
+            let data: __m256i = _mm256_loadu_si256(string.as_ptr().add(idx).cast::<__m256i>());
+            // Test the data against being backslash and quote.
+            let bs_or_quote = _mm256_or_si256(
+                _mm256_cmpeq_epi8(data, backslash),
+                _mm256_cmpeq_epi8(data, quote),
+            );
+            // Now mask the data with the quote range (0x1F).
+            let in_quote_range = _mm256_and_si256(data, lower_quote_range);
+            // then test of the data is unchanged. aka: xor it with the
+            // Any field that was inside the quote range it will be zero
+            // now.
+            let is_unchanged = _mm256_xor_si256(data, in_quote_range);
+            let in_range = _mm256_cmpeq_epi8(is_unchanged, zero);
+            let quote_bits = _mm256_movemask_epi8(_mm256_or_si256(bs_or_quote, in_range));
+            if quote_bits == 0 {
+                idx += 32;
+            } else {
+                let quote_dist = quote_bits.trailing_zeros() as usize;
+                stry!(writer.write_all(string.get_unchecked(0..idx + quote_dist)));
+
+                let ch = string[idx + quote_dist];
+                match ESCAPED[ch as usize] {
+                    b'u' => stry!(u_encode(writer, ch)),
+                    escape => stry!(writer.write_all(&[b'\\', escape])),
+                };
+
+                *string = string.get_unchecked(idx + quote_dist + 1..);
+                idx = 0;
+            }
+        }
+        stry!(writer.write_all(&string[0..idx]));
+        *string = string.get_unchecked(idx..);
+        Ok(())
     }
 
-    /// writes an unsigned integer
-    /// # Errors
-    /// if the write fails
+    #[cfg(all(not(target_feature = "avx2"), target_feature = "sse2"))]
     #[inline(always)]
-    #[deprecated(since = "0.1.5", note = "Please use the write_int function instead")]
-    fn write_uint(&mut self, num: u64) -> io::Result<()> {
-        itoa::write(self.get_writer(), num).map(|_| ())
+    #[allow(clippy::cast_possible_wrap, clippy::cast_ptr_alignment)]
+    /// Writes a string with simd-acceleration
+    /// # Safety
+    /// This function is unsafe because it uses simd instructions
+    /// # Errors
+    ///  if the write fails
+    unsafe fn write_str_simd(&mut self, string: &mut &[u8]) -> io::Result<()> {
+        #[cfg(target_arch = "x86")]
+        use std::arch::x86::{
+            __m128i, _mm_and_si128, _mm_cmpeq_epi8, _mm_loadu_si128, _mm_movemask_epi8,
+            _mm_or_si128, _mm_set1_epi8, _mm_xor_si128,
+        };
+        #[cfg(target_arch = "x86_64")]
+        use std::arch::x86_64::{
+            __m128i, _mm_and_si128, _mm_cmpeq_epi8, _mm_loadu_si128, _mm_movemask_epi8,
+            _mm_or_si128, _mm_set1_epi8, _mm_xor_si128,
+        };
+
+        let writer = self.get_writer();
+        let mut idx = 0;
+        let zero = _mm_set1_epi8(0);
+        let lower_quote_range = _mm_set1_epi8(0x1F_i8);
+        let quote = _mm_set1_epi8(b'"' as i8);
+        let backslash = _mm_set1_epi8(b'\\' as i8);
+        while string.len() - idx > 16 {
+            // Load 16 bytes of data;
+            let data: __m128i = _mm_loadu_si128(string.as_ptr().add(idx).cast::<__m128i>());
+            // Test the data against being backslash and quote.
+            let bs_or_quote =
+                _mm_or_si128(_mm_cmpeq_epi8(data, backslash), _mm_cmpeq_epi8(data, quote));
+            // Now mask the data with the quote range (0x1F).
+            let in_quote_range = _mm_and_si128(data, lower_quote_range);
+            // then test of the data is unchanged. aka: xor it with the
+            // Any field that was inside the quote range it will be zero
+            // now.
+            let is_unchanged = _mm_xor_si128(data, in_quote_range);
+            let in_range = _mm_cmpeq_epi8(is_unchanged, zero);
+            let quote_bits = _mm_movemask_epi8(_mm_or_si128(bs_or_quote, in_range));
+            if quote_bits == 0 {
+                idx += 16;
+            } else {
+                let quote_dist = quote_bits.trailing_zeros() as usize;
+                stry!(writer.write_all(&string[0..idx + quote_dist]));
+
+                let ch = string[idx + quote_dist];
+                match ESCAPED[ch as usize] {
+                    b'u' => stry!(u_encode(writer, ch)),
+                    escape => stry!(writer.write_all(&[b'\\', escape])),
+                }
+
+                *string = &string[idx + quote_dist + 1..];
+                idx = 0;
+            }
+        }
+        stry!(writer.write_all(&string[0..idx]));
+        *string = &string[idx..];
+        Ok(())
     }
 
-    /// writes an unsigned 128bit integer
-    /// # Errors
-    /// if the write fails
+    #[cfg(all(
+        not(target_arch = "aarch64"),
+        not(all(target_arch = "wasm32", target_feature = "simd128")),
+        not(any(target_feature = "avx2", target_feature = "sse2")),
+        feature = "allow-non-simd"
+    ))]
     #[inline(always)]
-    #[deprecated(since = "0.1.5", note = "Please use the write_int function instead")]
-    fn write_uint128(&mut self, num: u128) -> io::Result<()> {
-        itoa::write(self.get_writer(), num).map(|_| ())
+    /// Writes a string with simd-acceleration (not really, as the architecture doesn't support it)
+    /// # Safety
+    /// This function is unsafe because it uses simd instructions
+    /// # Errors
+    ///  if the write fails
+    unsafe fn write_str_simd(&mut self, string: &mut &[u8]) -> io::Result<()> {
+        self.write_simple_string(std::str::from_utf8_unchecked(string))
+    }
+
+    #[cfg(all(
+        not(target_arch = "aarch64"),
+        not(all(target_arch = "wasm32", target_feature = "simd128")),
+        not(any(target_feature = "avx2", target_feature = "sse2")),
+        not(feature = "allow-non-simd")
+    ))]
+    unsafe fn write_str_simd(&mut self, string: &mut &[u8]) -> io::Result<()> {
+        compile_error!("write_str_simd not supported on the current architecture")
+    }
+    #[cfg(target_arch = "aarch64")]
+    #[inline(always)]
+    /// Writes a string with simd-acceleration
+    /// # Safety
+    /// This function is unsafe because it uses simd instructions
+    /// # Errors
+    ///  if the write fails
+    unsafe fn write_str_simd(&mut self, string: &mut &[u8]) -> io::Result<()> {
+        use std::arch::aarch64::{
+            uint8x16_t, vandq_u8, vceqq_u8, vdupq_n_u8, veorq_u8, vgetq_lane_u16, vld1q_u8,
+            vorrq_u8, vpaddq_u8, vreinterpretq_u16_u8,
+        };
+        use std::mem;
+
+        #[inline(always)]
+        unsafe fn bit_mask() -> uint8x16_t {
+            mem::transmute([
+                0x01_u8, 0x02, 0x4, 0x8, 0x10, 0x20, 0x40, 0x80, 0x01, 0x02, 0x4, 0x8, 0x10, 0x20,
+                0x40, 0x80,
+            ])
+        }
+
+        #[inline(always)]
+        unsafe fn neon_movemask(input: uint8x16_t) -> u16 {
+            let simd_input: uint8x16_t = vandq_u8(input, bit_mask());
+            let tmp: uint8x16_t = vpaddq_u8(simd_input, simd_input);
+            let tmp = vpaddq_u8(tmp, tmp);
+            let tmp = vpaddq_u8(tmp, tmp);
+
+            vgetq_lane_u16(vreinterpretq_u16_u8(tmp), 0)
+        }
+
+        let writer = self.get_writer();
+        // The case where we have a 16+ byte block
+        // we repeate the same logic as above but with
+        // only 16 bytes
+        let mut idx = 0;
+        let zero = vdupq_n_u8(0);
+        let lower_quote_range = vdupq_n_u8(0x1F);
+        let quote = vdupq_n_u8(b'"');
+        let backslash = vdupq_n_u8(b'\\');
+        while string.len() - idx > 16 {
+            // Load 16 bytes of data;
+            let data: uint8x16_t = vld1q_u8(string.as_ptr().add(idx));
+            // Test the data against being backslash and quote.
+            let bs_or_quote = vorrq_u8(vceqq_u8(data, backslash), vceqq_u8(data, quote));
+            // Now mask the data with the quote range (0x1F).
+            let in_quote_range = vandq_u8(data, lower_quote_range);
+            // then test of the data is unchanged. aka: xor it with the
+            // Any field that was inside the quote range it will be zero
+            // now.
+            let is_unchanged = veorq_u8(data, in_quote_range);
+            let in_range = vceqq_u8(is_unchanged, zero);
+            let quote_bits = neon_movemask(vorrq_u8(bs_or_quote, in_range));
+            if quote_bits == 0 {
+                idx += 16;
+            } else {
+                let quote_dist = quote_bits.trailing_zeros() as usize;
+                stry!(writer.write_all(&string[0..idx + quote_dist]));
+                let ch = string[idx + quote_dist];
+                match ESCAPED[ch as usize] {
+                    b'u' => stry!(u_encode(writer, ch)),
+                    escape => stry!(writer.write_all(&[b'\\', escape])),
+                }
+
+                *string = &string[idx + quote_dist + 1..];
+                idx = 0;
+            }
+        }
+        stry!(writer.write_all(&string[0..idx]));
+        *string = &string[idx..];
+        Ok(())
+    }
+
+    #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+    #[inline(always)]
+    /// Writes a string with simd-acceleration
+    /// # Safety
+    /// This function is unsafe because it uses simd instructions
+    /// # Errors
+    ///  if the write fails
+    unsafe fn write_str_simd(&mut self, string: &mut &[u8]) -> io::Result<()> {
+        let writer = self.get_writer();
+        use std::arch::wasm32::{
+            u8x16_bitmask, u8x16_eq, u8x16_splat, v128, v128_and, v128_load, v128_or, v128_xor,
+        };
+
+        // The case where we have a 16+ byte block
+        // we repeat the same logic as above but with
+        // only 16 bytes
+        let mut idx = 0;
+        let zero = u8x16_splat(0);
+        let lower_quote_range = u8x16_splat(0x1F);
+        let quote = u8x16_splat(b'"');
+        let backslash = u8x16_splat(b'\\');
+        while string.len() - idx > 16 {
+            // Load 16 bytes of data;
+            let data = v128_load(string.as_ptr().add(idx).cast::<v128>());
+            // Test the data against being backslash and quote.
+            let bs_or_quote = v128_or(u8x16_eq(data, backslash), u8x16_eq(data, quote));
+            // Now mask the data with the quote range (0x1F).
+            let in_quote_range = v128_and(data, lower_quote_range);
+            // then test of the data is unchanged. aka: xor it with the
+            // Any field that was inside the quote range it will be zero
+            // now.
+            let is_unchanged = v128_xor(data, in_quote_range);
+            let in_range = u8x16_eq(is_unchanged, zero);
+            let quote_bits = u8x16_bitmask(v128_or(bs_or_quote, in_range));
+            if quote_bits == 0 {
+                idx += 16;
+            } else {
+                let quote_dist = quote_bits.trailing_zeros() as usize;
+                stry!(writer.write_all(&string[0..idx + quote_dist]));
+                let ch = string[idx + quote_dist];
+                match ESCAPED[ch as usize] {
+                    b'u' => stry!(u_encode(writer, ch)),
+                    escape => stry!(writer.write_all(&[b'\\', escape])),
+                }
+
+                *string = &string[idx + quote_dist + 1..];
+                idx = 0;
+            }
+        }
+        stry!(writer.write_all(&string[0..idx]));
+        *string = &string[idx..];
+        Ok(())
     }
 }
 
@@ -312,7 +564,7 @@ pub struct PrettyGenerator<V: Value> {
 }
 
 impl<V: Value> PrettyGenerator<V> {
-    /// Creates a new pretty priting generator
+    /// Creates a new pretty printing generator
     #[must_use]
     pub fn new(spaces: u16) -> Self {
         Self {
@@ -479,6 +731,7 @@ where
 // LLVM is not able to lower `Vec::extend_from_slice` into a memcpy, so this
 // helps eke out that last bit of performance.
 #[inline(always)]
+#[allow(clippy::uninit_vec)]
 pub(crate) fn extend_from_slice(dst: &mut Vec<u8>, src: &[u8]) {
     let dst_len = dst.len();
     let src_len = src.len();
@@ -491,196 +744,4 @@ pub(crate) fn extend_from_slice(dst: &mut Vec<u8>, src: &[u8]) {
 
         ptr::copy_nonoverlapping(src.as_ptr(), dst.as_mut_ptr().add(dst_len), src_len);
     }
-}
-
-#[cfg(target_feature = "avx2")]
-#[inline(always)]
-#[allow(clippy::cast_possible_wrap, clippy::cast_ptr_alignment)]
-pub(crate) unsafe fn write_str_simd<W>(writer: &mut W, string: &mut &[u8]) -> io::Result<()>
-where
-    W: std::io::Write,
-{
-    #[cfg(target_arch = "x86")]
-    use std::arch::x86::{
-        __m256i, _mm256_and_si256, _mm256_cmpeq_epi8, _mm256_loadu_si256, _mm256_movemask_epi8,
-        _mm256_or_si256, _mm256_set1_epi8, _mm256_xor_si256,
-    };
-    #[cfg(target_arch = "x86_64")]
-    use std::arch::x86_64::{
-        __m256i, _mm256_and_si256, _mm256_cmpeq_epi8, _mm256_loadu_si256, _mm256_movemask_epi8,
-        _mm256_or_si256, _mm256_set1_epi8, _mm256_xor_si256,
-    };
-
-    let mut idx = 0;
-    let zero = _mm256_set1_epi8(0);
-    let lower_quote_range = _mm256_set1_epi8(0x1F_i8);
-    let quote = _mm256_set1_epi8(b'"' as i8);
-    let backslash = _mm256_set1_epi8(b'\\' as i8);
-    while string.len() - idx >= 32 {
-        // Load 32 bytes of data;
-        let data: __m256i = _mm256_loadu_si256(string.as_ptr().add(idx).cast::<__m256i>());
-        // Test the data against being backslash and quote.
-        let bs_or_quote = _mm256_or_si256(
-            _mm256_cmpeq_epi8(data, backslash),
-            _mm256_cmpeq_epi8(data, quote),
-        );
-        // Now mask the data with the quote range (0x1F).
-        let in_quote_range = _mm256_and_si256(data, lower_quote_range);
-        // then test of the data is unchanged. aka: xor it with the
-        // Any field that was inside the quote range it will be zero
-        // now.
-        let is_unchanged = _mm256_xor_si256(data, in_quote_range);
-        let in_range = _mm256_cmpeq_epi8(is_unchanged, zero);
-        let quote_bits = _mm256_movemask_epi8(_mm256_or_si256(bs_or_quote, in_range));
-        if quote_bits == 0 {
-            idx += 32;
-        } else {
-            let quote_dist = quote_bits.trailing_zeros() as usize;
-            stry!(writer.write_all(string.get_unchecked(0..idx + quote_dist)));
-
-            let ch = string[idx + quote_dist];
-            match ESCAPED[ch as usize] {
-                b'u' => stry!(u_encode(writer, ch)),
-                escape => stry!(writer.write_all(&[b'\\', escape])),
-            };
-
-            *string = string.get_unchecked(idx + quote_dist + 1..);
-            idx = 0;
-        }
-    }
-    stry!(writer.write_all(&string[0..idx]));
-    *string = string.get_unchecked(idx..);
-    Ok(())
-}
-
-#[cfg(all(
-    any(target_arch = "x86", target_arch = "x86_64"),
-    not(target_feature = "avx2")
-))]
-#[inline(always)]
-#[allow(clippy::cast_possible_wrap, clippy::cast_ptr_alignment)]
-pub(crate) unsafe fn write_str_simd<W>(writer: &mut W, string: &mut &[u8]) -> io::Result<()>
-where
-    W: std::io::Write,
-{
-    #[cfg(target_arch = "x86")]
-    use std::arch::x86::{
-        __m128i, _mm_and_si128, _mm_cmpeq_epi8, _mm_loadu_si128, _mm_movemask_epi8, _mm_or_si128,
-        _mm_set1_epi8, _mm_xor_si128,
-    };
-    #[cfg(target_arch = "x86_64")]
-    use std::arch::x86_64::{
-        __m128i, _mm_and_si128, _mm_cmpeq_epi8, _mm_loadu_si128, _mm_movemask_epi8, _mm_or_si128,
-        _mm_set1_epi8, _mm_xor_si128,
-    };
-
-    let mut idx = 0;
-    let zero = _mm_set1_epi8(0);
-    let lower_quote_range = _mm_set1_epi8(0x1F_i8);
-    let quote = _mm_set1_epi8(b'"' as i8);
-    let backslash = _mm_set1_epi8(b'\\' as i8);
-    while string.len() - idx > 16 {
-        // Load 16 bytes of data;
-        let data: __m128i = _mm_loadu_si128(string.as_ptr().add(idx).cast::<__m128i>());
-        // Test the data against being backslash and quote.
-        let bs_or_quote =
-            _mm_or_si128(_mm_cmpeq_epi8(data, backslash), _mm_cmpeq_epi8(data, quote));
-        // Now mask the data with the quote range (0x1F).
-        let in_quote_range = _mm_and_si128(data, lower_quote_range);
-        // then test of the data is unchanged. aka: xor it with the
-        // Any field that was inside the quote range it will be zero
-        // now.
-        let is_unchanged = _mm_xor_si128(data, in_quote_range);
-        let in_range = _mm_cmpeq_epi8(is_unchanged, zero);
-        let quote_bits = _mm_movemask_epi8(_mm_or_si128(bs_or_quote, in_range));
-        if quote_bits == 0 {
-            idx += 16;
-        } else {
-            let quote_dist = quote_bits.trailing_zeros() as usize;
-            stry!(writer.write_all(&string[0..idx + quote_dist]));
-
-            let ch = string[idx + quote_dist];
-            match ESCAPED[ch as usize] {
-                b'u' => stry!(u_encode(writer, ch)),
-                escape => stry!(writer.write_all(&[b'\\', escape])),
-            }
-
-            *string = &string[idx + quote_dist + 1..];
-            idx = 0;
-        }
-    }
-    stry!(writer.write_all(&string[0..idx]));
-    *string = &string[idx..];
-    Ok(())
-}
-
-#[cfg(all(target_arch = "aarch64"))]
-#[inline(always)]
-pub(crate) unsafe fn write_str_simd<W>(writer: &mut W, string: &mut &[u8]) -> io::Result<()>
-where
-    W: std::io::Write,
-{
-    use std::arch::aarch64::{
-        uint8x16_t, vandq_u8, vceqq_u8, vdupq_n_u8, veorq_u8, vgetq_lane_u16, vld1q_u8, vorrq_u8,
-        vpaddq_u8, vreinterpretq_u16_u8,
-    };
-    use std::mem;
-
-    #[inline(always)]
-    unsafe fn bit_mask() -> uint8x16_t {
-        mem::transmute([
-            0x01_u8, 0x02, 0x4, 0x8, 0x10, 0x20, 0x40, 0x80, 0x01, 0x02, 0x4, 0x8, 0x10, 0x20,
-            0x40, 0x80,
-        ])
-    }
-
-    #[inline(always)]
-    unsafe fn neon_movemask(input: uint8x16_t) -> u16 {
-        let simd_input: uint8x16_t = vandq_u8(input, bit_mask());
-        let tmp: uint8x16_t = vpaddq_u8(simd_input, simd_input);
-        let tmp = vpaddq_u8(tmp, tmp);
-        let tmp = vpaddq_u8(tmp, tmp);
-
-        vgetq_lane_u16(vreinterpretq_u16_u8(tmp), 0)
-    }
-
-    // The case where we have a 16+ byte block
-    // we repeate the same logic as above but with
-    // only 16 bytes
-    let mut idx = 0;
-    let zero = vdupq_n_u8(0);
-    let lower_quote_range = vdupq_n_u8(0x1F);
-    let quote = vdupq_n_u8(b'"');
-    let backslash = vdupq_n_u8(b'\\');
-    while string.len() - idx > 16 {
-        // Load 16 bytes of data;
-        let data: uint8x16_t = vld1q_u8(string.as_ptr().add(idx));
-        // Test the data against being backslash and quote.
-        let bs_or_quote = vorrq_u8(vceqq_u8(data, backslash), vceqq_u8(data, quote));
-        // Now mask the data with the quote range (0x1F).
-        let in_quote_range = vandq_u8(data, lower_quote_range);
-        // then test of the data is unchanged. aka: xor it with the
-        // Any field that was inside the quote range it will be zero
-        // now.
-        let is_unchanged = veorq_u8(data, in_quote_range);
-        let in_range = vceqq_u8(is_unchanged, zero);
-        let quote_bits = neon_movemask(vorrq_u8(bs_or_quote, in_range));
-        if quote_bits == 0 {
-            idx += 16;
-        } else {
-            let quote_dist = quote_bits.trailing_zeros() as usize;
-            stry!(writer.write_all(&string[0..idx + quote_dist]));
-            let ch = string[idx + quote_dist];
-            match ESCAPED[ch as usize] {
-                b'u' => stry!(u_encode(writer, ch)),
-                escape => stry!(writer.write_all(&[b'\\', escape])),
-            }
-
-            *string = &string[idx + quote_dist + 1..];
-            idx = 0;
-        }
-    }
-    stry!(writer.write_all(&string[0..idx]));
-    *string = &string[idx..];
-    Ok(())
 }
